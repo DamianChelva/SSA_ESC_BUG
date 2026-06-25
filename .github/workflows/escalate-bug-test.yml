@@ -1,0 +1,152 @@
+# .github/workflows/escalate-bug-test.yml
+name: Escalate Bug (Test - DM Only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      port_payload:
+        description: "Port payload containing bug escalation details"
+        required: true
+        type: string
+
+jobs:
+  escalate-bug-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ─── 1. Parse Port Payload ────────────────────────────────────────────────
+      - name: Parse Port Payload
+        id: parse
+        run: |
+          PAYLOAD='${{ github.event.inputs.port_payload }}'
+
+          echo "entity_identifier=$(echo $PAYLOAD | jq -r '.entity.identifier')"     >> $GITHUB_OUTPUT
+          echo "entity_title=$(echo $PAYLOAD       | jq -r '.entity.title')"          >> $GITHUB_OUTPUT
+          echo "entity_url=$(echo $PAYLOAD         | jq -r '.entity.properties.url')" >> $GITHUB_OUTPUT
+          echo "reason=$(echo $PAYLOAD             | jq -r '.reason')"                >> $GITHUB_OUTPUT
+          echo "dm_recipient=$(echo $PAYLOAD       | jq -r '.dm_recipient')"          >> $GITHUB_OUTPUT
+          echo "run_id=$(echo $PAYLOAD             | jq -r '.runId')"                 >> $GITHUB_OUTPUT
+          echo "triggered_by=$(echo $PAYLOAD       | jq -r '.triggered_by')"          >> $GITHUB_OUTPUT
+          echo "zd_assignee=$(echo $PAYLOAD        | jq -r '.zd_assignee_email')"     >> $GITHUB_OUTPUT
+          echo "rnd_assignee=$(echo $PAYLOAD       | jq -r '.rnd_assignee_email')"    >> $GITHUB_OUTPUT
+
+      # ─── 2. Acknowledge Run in Port ───────────────────────────────────────────
+      - name: Mark Port Run as In Progress
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          operation: PATCH_RUN
+          runId: ${{ steps.parse.outputs.run_id }}
+          status: "IN_PROGRESS"
+          logMessage: "⏳ [TEST] Escalating bug '${{ steps.parse.outputs.entity_title }}' — sending DM to ${{ steps.parse.outputs.dm_recipient }}..."
+
+      # ─── 3. Update Jira Priority → Urgent ────────────────────────────────────
+      - name: Update Jira Bug Priority to Urgent
+        id: jira_update
+        run: |
+          ISSUE_KEY="${{ steps.parse.outputs.entity_identifier }}"
+
+          HTTP_STATUS=$(curl -s -o /tmp/jira_response.json -w "%{http_code}" \
+            -X PUT \
+            -H "Authorization: Basic $(echo -n '${{ secrets.JIRA_USERNAME }}:${{ secrets.JIRA_API_TOKEN }}' | base64)" \
+            -H "Content-Type: application/json" \
+            -d '{"fields": {"priority": {"name": "Urgent"}}}' \
+            "https://${{ secrets.JIRA_DOMAIN }}.atlassian.net/rest/api/3/issue/$ISSUE_KEY")
+
+          echo "HTTP Status: $HTTP_STATUS"
+          cat /tmp/jira_response.json
+
+          if [ "$HTTP_STATUS" -eq 204 ]; then
+            echo "✅ Jira priority updated to Urgent"
+          else
+            echo "❌ Failed to update Jira priority"
+            exit 1
+          fi
+
+      # ─── 4. Lookup Slack User ID by Email ────────────────────────────────────
+      - name: Lookup Slack User ID for DM
+        id: slack_user
+        run: |
+          DM_EMAIL="${{ steps.parse.outputs.dm_recipient }}"
+
+          RESPONSE=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.SLACK_BOT_TOKEN }}" \
+            "https://slack.com/api/users.lookupByEmail?email=$DM_EMAIL")
+
+          echo "Slack lookup response: $RESPONSE"
+
+          USER_ID=$(echo $RESPONSE | jq -r '.user.id')
+
+          if [ "$USER_ID" == "null" ] || [ -z "$USER_ID" ]; then
+            echo "❌ Could not find Slack user for email: $DM_EMAIL"
+            exit 1
+          fi
+
+          echo "slack_user_id=$USER_ID" >> $GITHUB_OUTPUT
+          echo "✅ Found Slack user ID: $USER_ID"
+
+      # ─── 5. Send Slack DM to Test User ───────────────────────────────────────
+      - name: Send Slack DM to Test Recipient
+        uses: slackapi/slack-github-action@v2
+        with:
+          channel-id: ${{ steps.slack_user.outputs.slack_user_id }}
+          payload: |
+            {
+              "text": "🧪 [TEST] Bug Escalated to Urgent",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": "🧪 [TEST] Bug Escalated to Urgent" }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Bug:*
+<${{ steps.parse.outputs.entity_url }}|${{ steps.parse.outputs.entity_title }}>" },
+                    { "type": "mrkdwn", "text": "*Priority:*
+🔴 Urgent" },
+                    { "type": "mrkdwn", "text": "*Escalation Reason:*
+${{ steps.parse.outputs.reason }}" },
+                    { "type": "mrkdwn", "text": "*Escalated By:*
+${{ steps.parse.outputs.triggered_by }}" },
+                    { "type": "mrkdwn", "text": "*R&D Assignee:*\n${{ steps.parse.outputs.rnd_assignee }}" },
+                    { "type": "mrkdwn", "text": "*ZD Assignee (Reporter):*
+${{ steps.parse.outputs.zd_assignee }}" }
+                  ]
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    { "type": "mrkdwn", "text": "⚠️ This is a *TEST* notification sent to ${{ steps.parse.outputs.dm_recipient }} only. No customer/deal channels notified." }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+
+      # ─── 6. Report Back to Port ───────────────────────────────────────────────
+      - name: Mark Port Run as Success
+        if: success()
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          operation: PATCH_RUN
+          runId: ${{ steps.parse.outputs.run_id }}
+          status: "SUCCESS"
+          logMessage: |
+            ✅ [TEST] Bug '${{ steps.parse.outputs.entity_title }}' escalated to Urgent.
+            DM sent to ${{ steps.parse.outputs.dm_recipient }} only. No customer/deal channels were notified.
+
+      - name: Mark Port Run as Failure
+        if: failure()
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          operation: PATCH_RUN
+          runId: ${{ steps.parse.outputs.run_id }}
+          status: "FAILURE"
+          logMessage: "❌ [TEST] Failed to escalate bug '${{ steps.parse.outputs.entity_title }}'. Check workflow logs."
