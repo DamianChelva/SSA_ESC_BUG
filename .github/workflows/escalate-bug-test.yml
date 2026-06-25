@@ -102,16 +102,11 @@ jobs:
                   "type": "section",
                   "fields": [
                     { "type": "mrkdwn", "text": "*Bug:*\n<${{ steps.parse.outputs.entity_url }}|${{ steps.parse.outputs.entity_title }}>" },
-                    { "type": "mrkdwn", "text": "*Priority:*
-🔴 Urgent" },
-                    { "type": "mrkdwn", "text": "*Escalation Reason:*
-${{ steps.parse.outputs.reason }}" },
-                    { "type": "mrkdwn", "text": "*Escalated By:*
-${{ steps.parse.outputs.triggered_by }}" },
-                    { "type": "mrkdwn", "text": "*R&D Assignee:*
-${{ steps.parse.outputs.rnd_assignee }}" },
-                    { "type": "mrkdwn", "text": "*ZD Assignee (Reporter):*
-${{ steps.parse.outputs.zd_assignee }}" }
+                    { "type": "mrkdwn", "text": "*Priority:*\n🔴 Urgent" },
+                    { "type": "mrkdwn", "text": "*Escalation Reason:*\n${{ steps.parse.outputs.reason }}" },
+                    { "type": "mrkdwn", "text": "*Escalated By:*\n${{ steps.parse.outputs.triggered_by }}" },
+                    { "type": "mrkdwn", "text": "*R&D Assignee:*\n${{ steps.parse.outputs.rnd_assignee }}" },
+                    { "type": "mrkdwn", "text": "*ZD Assignee (Reporter):*\n${{ steps.parse.outputs.zd_assignee }}" }
                   ]
                 },
                 {
