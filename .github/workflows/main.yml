@@ -1,0 +1,167 @@
+# .github/workflows/escalate-bug.yml
+name: Escalate Bug
+
+env:
+  GITHUB_REFERENCE: https://github.com/DamianChelva
+
+on:
+  workflow_dispatch:
+    inputs:
+      port_payload:
+        description: "Port payload containing bug escalation details"
+        required: true
+        type: string
+
+jobs:
+  escalate-bug:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ─── 1. Parse Port Payload ────────────────────────────────────────────────
+      - name: Parse Port Payload
+        id: parse
+        run: |
+          PAYLOAD='${{ github.event.inputs.port_payload }}'
+
+          echo "entity_identifier=$(echo $PAYLOAD | jq -r '.entity.identifier')"     >> $GITHUB_OUTPUT
+          echo "entity_title=$(echo $PAYLOAD       | jq -r '.entity.title')"          >> $GITHUB_OUTPUT
+          echo "entity_url=$(echo $PAYLOAD         | jq -r '.entity.properties.url')" >> $GITHUB_OUTPUT
+          echo "reason=$(echo $PAYLOAD             | jq -r '.reason')"                >> $GITHUB_OUTPUT
+          echo "customer_channel=$(echo $PAYLOAD   | jq -r '.customer_channel')"      >> $GITHUB_OUTPUT
+          echo "deal_channel=$(echo $PAYLOAD       | jq -r '.deal_channel')"          >> $GITHUB_OUTPUT
+          echo "run_id=$(echo $PAYLOAD             | jq -r '.runId')"                 >> $GITHUB_OUTPUT
+          echo "triggered_by=$(echo $PAYLOAD       | jq -r '.triggered_by')"          >> $GITHUB_OUTPUT
+          echo "zd_assignee=$(echo $PAYLOAD        | jq -r '.zd_assignee_email')"     >> $GITHUB_OUTPUT
+          echo "rnd_assignee=$(echo $PAYLOAD       | jq -r '.rnd_assignee_email')"    >> $GITHUB_OUTPUT
+
+      # ─── 2. Record GitHub Reference ────────────────────────────────────────
+      - name: Record GitHub Reference
+        run: |
+          echo "Repository reference: $GITHUB_REFERENCE" >> "$GITHUB_STEP_SUMMARY"
+
+      # ─── 3. Acknowledge Run in Port ───────────────────────────────────────────
+      - name: Mark Port Run as In Progress
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          operation: PATCH_RUN
+          runId: ${{ steps.parse.outputs.run_id }}
+          status: "IN_PROGRESS"
+          logMessage: "⏳ Escalating bug '${{ steps.parse.outputs.entity_title }}' to Urgent priority..."
+
+      # ─── 4. Update Jira Priority → Urgent ────────────────────────────────────
+      - name: Update Jira Bug Priority to Urgent
+        id: jira_update
+        run: |
+          ISSUE_KEY="${{ steps.parse.outputs.entity_identifier }}"
+
+          HTTP_STATUS=$(curl -s -o /tmp/jira_response.json -w "%{http_code}" \
+            -X PUT \
+            -H "Authorization: Basic $(echo -n '${{ secrets.JIRA_USERNAME }}:${{ secrets.JIRA_API_TOKEN }}' | base64)" \
+            -H "Content-Type: application/json" \
+            -d '{"fields": {"priority": {"name": "Urgent"}}}' \
+            "https://${{ secrets.JIRA_DOMAIN }}.atlassian.net/rest/api/3/issue/$ISSUE_KEY")
+
+          echo "Jira API response: $(cat /tmp/jira_response.json)"
+          echo "HTTP Status: $HTTP_STATUS"
+
+          if [ "$HTTP_STATUS" -eq 204 ]; then
+            echo "✅ Jira priority updated to Urgent successfully"
+          else
+            echo "❌ Failed to update Jira priority. HTTP Status: $HTTP_STATUS"
+            exit 1
+          fi
+
+      # ─── 5. Notify Customer Slack Channel ────────────────────────────────────
+      - name: Notify Customer Slack Channel
+        uses: slackapi/slack-github-action@v2
+        with:
+          channel-id: ${{ steps.parse.outputs.customer_channel }}
+          payload: |
+            {
+              "text": "🚨 Bug Escalated to Urgent",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": "🚨 Bug Escalated to Urgent" }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Bug:*
+<${{ steps.parse.outputs.entity_url }}|${{ steps.parse.outputs.entity_title }}>" },
+                    { "type": "mrkdwn", "text": "*Priority:*
+🔴 Urgent" },
+                    { "type": "mrkdwn", "text": "*Escalation Reason:*
+${{ steps.parse.outputs.reason }}" },
+                    { "type": "mrkdwn", "text": "*Escalated By:*
+${{ steps.parse.outputs.triggered_by }}" },
+                    { "type": "mrkdwn", "text": "*R&D Assignee:*
+${{ steps.parse.outputs.rnd_assignee }}" }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+
+      # ─── 6. Notify Deal Slack Channel ────────────────────────────────────────
+      - name: Notify Deal Slack Channel
+        uses: slackapi/slack-github-action@v2
+        with:
+          channel-id: ${{ steps.parse.outputs.deal_channel }}
+          payload: |
+            {
+              "text": "🚨 Bug Escalated to Urgent",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": "🚨 Bug Escalated to Urgent" }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Bug:*
+<${{ steps.parse.outputs.entity_url }}|${{ steps.parse.outputs.entity_title }}>" },
+                    { "type": "mrkdwn", "text": "*Priority:*
+🔴 Urgent" },
+                    { "type": "mrkdwn", "text": "*Escalation Reason:*
+${{ steps.parse.outputs.reason }}" },
+                    { "type": "mrkdwn", "text": "*Escalated By:*
+${{ steps.parse.outputs.triggered_by }}" },
+                    { "type": "mrkdwn", "text": "*ZD Assignee (Reporter):*
+${{ steps.parse.outputs.zd_assignee }}" },
+                    { "type": "mrkdwn", "text": "*R&D Assignee:*
+${{ steps.parse.outputs.rnd_assignee }}" }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+
+      # ─── 7. Report Back to Port ───────────────────────────────────────────────
+      - name: Mark Port Run as Success
+        if: success()
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          operation: PATCH_RUN
+          runId: ${{ steps.parse.outputs.run_id }}
+          status: "SUCCESS"
+          logMessage: |
+            ✅ Bug '${{ steps.parse.outputs.entity_title }}' successfully escalated to Urgent.
+            Notifications sent to ${{ steps.parse.outputs.customer_channel }} and ${{ steps.parse.outputs.deal_channel }}.
+
+      - name: Mark Port Run as Failure
+        if: failure()
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          operation: PATCH_RUN
+          runId: ${{ steps.parse.outputs.run_id }}
+          status: "FAILURE"
+          logMessage: "❌ Failed to escalate bug '${{ steps.parse.outputs.entity_title }}'. Check workflow logs for details."
